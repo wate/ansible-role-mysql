@@ -1,9 +1,5 @@
 -- Change root password
-{% if mysql_version is version('5.6', '>=') -%}
 ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_root_password }}';
-{% else %}
-SET PASSWORD FOR 'root'@'localhost' = PASSWORD('{{ mysql_root_password }}');
-{% endif %}
 -- Remove anonymous users
 DELETE FROM mysql.user WHERE User='';
 -- Remove test database and access
