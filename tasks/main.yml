@@ -26,6 +26,11 @@
 - name: install dependency packages
   yum:
     name: "{{ mysql_dependency_packages }}"
+- name: create MySQL custom setting file directory
+  file:
+    path: /etc/my.cnf.d
+    state: directory
+    mode: "0755"
 - name: Ensure includedir setting
   lineinfile:
     path: /etc/my.cnf
@@ -55,32 +60,55 @@
     path: /root/.my.cnf
   register: result
 - block:
-    - name:
-      shell:  cat /var/log/mysqld.log | grep "A temporary password is generated for root@localhost:"
-      register: generated_password
-      failed_when: generated_password.rc not in [0, 1]
-    - name: set variable temporary root password
-      set_fact:
-        temporary_root_password: "{{ generated_password.stdout.split('A temporary password is generated for root@localhost: ') | last }}"
-      when: generated_password.rc == 0
-    - debug:
-        var: temporary_root_password
+    - name: reset root passsword
+      block:
+        - name: get temporary password
+          shell:  |
+            set -o pipefail
+            cat /var/log/mysqld.log | grep "A temporary password is generated for root@localhost: "
+          register: mysql_default_password
+          failed_when: mysql_default_password.rc not in [0, 1]
+        - name: reset root password
+          block:
+            - name: change root password
+              shell: |
+                mysql -u root -p'{{ mysql_default_password.stdout.split('root@localhost: ') | last }}' \
+                --connect-expired-password \
+                -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_root_password }}';"
+              no_log: true
+            - name: create root user connection setting
+              ini_file:
+                path: /root/.my.cnf
+                section: client
+                option: "{{ item.option }}"
+                value: "{{ item.value }}"
+                mode: "0600"
+                create: true
+              no_log: true
+              loop:
+                - option: host
+                  value: localhost
+                - option: user
+                  value: root
+                - option: password
+                  value: "{{ mysql_root_password }}"
+          when: mysql_default_password.rc == 0
+      when: mysql_version is version('5.7', '>=')
     - name: create mysql secure installation query file
       template:
         src: mysql_secure_installation.sql.j2
         dest: /tmp/mysql_secure_installation.sql
         mode: "0600"
-      no_log: true
-    # - name: execute mysql secure installation
-    #   shell: mysql -u root {{ '-p' + temporary_root_password + ' --connect-expired-password' if temporary_root_password is defined else '' }} mysql </tmp/mysql_secure_installation.sql
-    # - name: remove mysql secure installation query file
-    #   file:
-    #     path: /tmp/mysql_secure_installation.sql
-    #     state: absent
+    - name: execute mysql secure installation
+      shell: mysql -u root mysql </tmp/mysql_secure_installation.sql
+    - name: remove mysql secure installation query file
+      file:
+        path: /tmp/mysql_secure_installation.sql
+        state: absent
   when: not result.stat.exists
-# - name: change root password
-#   command: mysqladmin password "{{ mysql_root_password }}" -u root
-#   when: result.stat.exists
+- name: change root password
+  command: mysqladmin password "{{ mysql_root_password }}" -u root
+  when: result.stat.exists
 # - name: create root user connection setting
 #   ini_file:
 #     path: /root/.my.cnf
@@ -89,7 +117,7 @@
 #     value: "{{ item.value }}"
 #     mode: "0600"
 #     create: true
-#   with_items:
+#   loop:
 #     - option: host
 #       value: localhost
 #     - option: user
@@ -97,36 +125,3 @@
 #     - option: password
 #       value: "{{ mysql_root_password }}"
 #   no_log: true
-# - name: create / remove databases
-#   mysql_db:
-#     name: "{{ item.name }}"
-#     encoding: "{{ item.encoding | default(mysql_default_charset) }}"
-#     collation: "{{ item.collation | default(mysql_default_collation) }}"
-#     state: "{{ 'present' if item.state | default(true) else 'absent' }}"
-#   with_items: "{{ mysql_databases }}"
-#   loop_control:
-#     label: "{{ item.name }}"
-# - name: create MySQL users(on mysql_databases variable)
-#   mysql_user:
-#     name: "{{ item.0.user | default(item.0.name) }}"
-#     password: "{{ item.0.password | default(omit) }}"
-#     host: "{{ item.1 }}"
-#     priv: "{{ item.0.name }}.*:ALL"
-#   loop: "{{ lookup('subelements', mysql_databases, 'hosts', {'skip_missing': True}) }}"
-#   no_log: true
-# - name: create / remove MySQL users
-#   mysql_user:
-#     name: "{{ item.0.name }}"
-#     password: "{{ item.0.password }}"
-#     host: "{{ item.1 }}"
-#     priv: "{{ item.0.privs | join('/') }}"
-#     state: "{{ 'present' if item.0.state | default(true) else 'absent' }}"
-#   loop: "{{ lookup('subelements', mysql_users, 'hosts') }}"
-#   no_log: true
-# - name: allow MySQL port
-#   firewalld:
-#     service: mysql
-#     permanent: true
-#     state: enabled
-#   when: mysql_allow_connect_other_host | default(false)
-#   notify: restart firewalld
